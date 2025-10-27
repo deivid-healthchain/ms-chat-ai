@@ -1,0 +1,28 @@
+# Perfil padrão: SERVIDOR API
+spring:
+  main:
+    web-application-type: servlet
+  profiles:
+    active: server
+
+# --- Configurações da aplicação RAG
+rag:
+  document:
+    # Caminho para o arquivo PDF dentro dos recursos do projeto
+    path: "classpath:documents/healthcare.pdf"
+  splitter:
+    chunk-size: 300
+    chunk-overlap: 30
+  retriever:
+    max-results: 5
+    min-score: 0.75
+
+---
+
+# Perfil de ingestão: TAREFA DE LINHA DE COMANDO
+spring:
+  config:
+    activate:
+      on-profile: indexer
+  main:
+    web-application-type: none # Não inicia o servidor web

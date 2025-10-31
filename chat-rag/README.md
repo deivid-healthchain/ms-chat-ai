@@ -153,7 +153,7 @@ A API estará disponível em `http://localhost:8080` com os seguintes endpoints:
 - `POST /api/v1/ask`: Endpoint para fazer perguntas
   ```json
   {
-    "pergunta": "Sua pergunta aqui"
+    "message": "Sua pergunta aqui"
   }
   ```
 - `GET /api/v1/health`: Verificar status da API

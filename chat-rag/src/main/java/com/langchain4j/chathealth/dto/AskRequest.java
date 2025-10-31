@@ -1,13 +1,13 @@
 package com.langchain4j.chathealth.dto;
 
 public class AskRequest {
-    public String pergunta;
+    public String message;
 
     public String getPergunta() {
-        return pergunta;
+        return message;
     }
 
-    public void setPergunta(String pergunta) {
-        this.pergunta = pergunta;
+    public void setPergunta(String message) {
+        this.message = message;
     }
 }

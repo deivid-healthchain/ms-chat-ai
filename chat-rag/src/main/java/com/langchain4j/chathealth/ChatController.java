@@ -29,7 +29,7 @@ public class ChatController {
         // Validação de entrada
         if (request == null || request.getPergunta() == null || request.getPergunta().isBlank()) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(new ErrorResponse("O campo 'pergunta' é obrigatório."));
+                    .body(new ErrorResponse("O campo 'message' é obrigatório."));
         }
         
         // Delegação para o serviço

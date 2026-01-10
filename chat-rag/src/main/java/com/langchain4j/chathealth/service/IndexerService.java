@@ -15,8 +15,10 @@ import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingStore;
-import io.github.cdimascio.dotenv.Dotenv;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,8 +29,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+/**
+ * Serviço de indexação de documentos PDF no Azure AI Search
+ * Utiliza variáveis de ambiente em vez de arquivo .env
+ */
 @Service
 public class IndexerService {
+
+    private static final Logger logger = LoggerFactory.getLogger(IndexerService.class);
 
     private record FileInfo(String filename, String hash) {}
 
@@ -46,27 +54,36 @@ public class IndexerService {
                           EmbeddingStore<TextSegment> embeddingStore,
                           SearchIndexClient searchIndexClient,
                           BlobServiceClient blobServiceClient,
-                          SearchClient searchClient) {
+                          SearchClient searchClient,
+                          @Value("${azure.search.index-name:}") String indexName,
+                          @Value("${azure.search.embedding-dimension:1536}") int embeddingDimension,
+                          @Value("${azure.storage.container-name:}") String containerName) {
         this.embeddingModel = embeddingModel;
         this.embeddingStore = embeddingStore;
         this.searchIndexClient = searchIndexClient;
         this.blobServiceClient = blobServiceClient;
         this.searchClient = searchClient;
-
-        Dotenv dotenv = Dotenv.load();
-        this.indexName = dotenv.get("AZURE_AISEARCH_INDEX_NAME");
-        this.embeddingDimension = Integer.parseInt(dotenv.get("AZURE_AISEARCH_EMBEDDING_DIMENSION"));
-        this.containerName = dotenv.get("AZURE_STORAGE_CONTAINER_NAME");
+        this.indexName = indexName;
+        this.embeddingDimension = embeddingDimension;
+        this.containerName = containerName;
+        
+        logger.info("✅ IndexerService inicializado com indexName: {}, containerName: {}", indexName, containerName);
     }
 
     public void process() throws InterruptedException, NoSuchAlgorithmException, IOException {
-        System.out.println("Iniciando processo de sincronização do índice por hash: " + indexName);
+        if (indexName == null || indexName.isEmpty() || containerName == null || containerName.isEmpty()) {
+            logger.warn("⚠️ Configurações de índice ou container não definidas. Pulando processamento.");
+            return;
+        }
+        
+        logger.info("Iniciando processo de sincronização do índice por hash: {}", indexName);
         ensureIndexExists();
 
         Map<String, String> storageFileHashes = getFileHashesFromBlobStorage();
-        System.out.println("Encontrados " + storageFileHashes.size() + " arquivos no Blob Storage.");
+        logger.info("Encontrados {} arquivos no Blob Storage.", storageFileHashes.size());
+        
         Map<String, String> indexFileHashes = getIngestedFileHashesFromIndex();
-        System.out.println("Encontrados " + indexFileHashes.size() + " arquivos já processados no índice.");
+        logger.info("Encontrados {} arquivos já processados no índice.", indexFileHashes.size());
 
         List<FileInfo> filesToIngest = storageFileHashes.entrySet().stream()
                 .filter(entry -> !entry.getValue().equals(indexFileHashes.get(entry.getKey())))
@@ -78,28 +95,29 @@ public class IndexerService {
                 .collect(Collectors.toList());
         
         if (!filesToDelete.isEmpty()) {
-            System.out.println("Arquivos para deletar do índice: " + filesToDelete);
+            logger.info("Arquivos para deletar do índice: {}", filesToDelete);
             deleteDocumentsByFilename(filesToDelete);
         } else {
-             System.out.println("Nenhum arquivo para deletar.");
+             logger.info("Nenhum arquivo para deletar.");
         }
         
         if (filesToIngest.isEmpty()) {
-            System.out.println("Nenhum arquivo novo ou modificado para ingerir.");
+            logger.info("Nenhum arquivo novo ou modificado para ingerir.");
         } else {
-            System.out.println("Arquivos novos ou modificados para ingerir: " + filesToIngest.stream().map(FileInfo::filename).collect(Collectors.toList()));
+            logger.info("Arquivos novos ou modificados para ingerir: {}", 
+                filesToIngest.stream().map(FileInfo::filename).collect(Collectors.toList()));
             List<String> modifiedFiles = filesToIngest.stream()
                 .map(FileInfo::filename)
                 .filter(indexFileHashes::containsKey)
                 .collect(Collectors.toList());
             if (!modifiedFiles.isEmpty()) {
-                System.out.println("Deletando versões antigas de arquivos modificados: " + modifiedFiles);
+                logger.info("Deletando versões antigas de arquivos modificados: {}", modifiedFiles);
                 deleteDocumentsByFilename(modifiedFiles);
             }
             ingestNewDocuments(filesToIngest);
         }
 
-        System.out.println("Sincronização concluída com sucesso!");
+        logger.info("Sincronização concluída com sucesso!");
     }
 
     private Map<String, String> getFileHashesFromBlobStorage() throws NoSuchAlgorithmException, IOException {
@@ -134,7 +152,7 @@ public class IndexerService {
                 }
             });
         } catch (Exception e) {
-            System.err.println("Aviso: Não foi possível obter os hashes do índice (pode estar vazio). " + e.getMessage());
+            logger.warn("Aviso: Não foi possível obter os hashes do índice (pode estar vazio). {}", e.getMessage());
         }
         return fileHashes.entrySet().stream()
                          .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue, (v1, v2) -> v1));
@@ -147,7 +165,7 @@ public class IndexerService {
         DocumentSplitter splitter = DocumentSplitters.recursive(500, 100);
 
         for (FileInfo fileInfo : filesToIngest) {
-            System.out.println("  -> Processando para ingestão manual: " + fileInfo.filename());
+            logger.info("  -> Processando para ingestão manual: {}", fileInfo.filename());
 
             // 1. Carrega o documento
             Document document = documentParser.parse(
@@ -182,9 +200,10 @@ public class IndexerService {
             // 4. Upload manual para o Azure Search
             try {
                 searchClient.uploadDocuments(docsToUpload);
-                System.out.println("  -> " + docsToUpload.size() + " segmentos para '" + fileInfo.filename() + "' foram enviados manualmente para o índice.");
+                logger.info("  -> {} segmentos para '{}' foram enviados manualmente para o índice.", 
+                    docsToUpload.size(), fileInfo.filename());
             } catch (Exception e) {
-                System.err.println("Erro ao enviar documentos para o índice: " + e.getMessage());
+                logger.error("Erro ao enviar documentos para o índice: {}", e.getMessage());
             }
         }
     }
@@ -195,7 +214,7 @@ public class IndexerService {
                 .map(name -> "metadata/source eq '" + name.replace("'", "''") + "'")
                 .collect(Collectors.joining(" or "));
 
-        System.out.println("Deletando documentos com filtro: " + filter);
+        logger.info("Deletando documentos com filtro: {}", filter);
         try {
             List<String> idsToDelete = new ArrayList<>();
             SearchOptions options = new SearchOptions().setFilter(filter).setSelect("id");
@@ -204,10 +223,10 @@ public class IndexerService {
             
             if (!idsToDelete.isEmpty()) {
                 embeddingStore.removeAll(idsToDelete);
-                System.out.println(idsToDelete.size() + " segmentos de texto foram deletados.");
+                logger.info("{} segmentos de texto foram deletados.", idsToDelete.size());
             }
         } catch (Exception e) {
-            System.err.println("Erro ao deletar documentos antigos: " + e.getMessage());
+            logger.error("Erro ao deletar documentos antigos: {}", e.getMessage());
         }
     }
     
@@ -232,13 +251,13 @@ public class IndexerService {
     
     private void ensureIndexExists() throws InterruptedException {
         if (!searchIndexClient.listIndexes().stream().anyMatch(index -> index.getName().equalsIgnoreCase(indexName))) {
-            System.out.println("Índice não encontrado. Criando novo índice...");
+            logger.info("Índice não encontrado. Criando novo índice...");
             searchIndexClient.createIndex(buildSearchIndex());
-            System.out.println("Aguardando provisionamento do índice...");
+            logger.info("Aguardando provisionamento do índice...");
             Thread.sleep(8000);
-            System.out.println("Índice criado e pronto para uso.");
+            logger.info("Índice criado e pronto para uso.");
         } else {
-            System.out.println("Índice existente encontrado. Prosseguindo com a sincronização.");
+            logger.info("Índice existente encontrado. Prosseguindo com a sincronização.");
         }
     }
 
